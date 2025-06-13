@@ -11,16 +11,19 @@ from libero.libero.envs import OffScreenRenderEnv
 
 from experiments.robot.robot_utils import (
     DATE,
+    TIME,
     DATE_TIME,
 )
+from libero.libero.benchmark import Task
 
 
-def get_libero_env(task, model_family, resolution=256):
+def get_libero_env(task: Task, model_family, resolution: int=256):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
     env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
     env = OffScreenRenderEnv(**env_args)
+
     env.seed(0)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
 
@@ -58,12 +61,15 @@ def get_libero_image(obs, resize_size):
     return img
 
 
-def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):
+def save_rollout_video(rollout_images, idx, success, task_description, log_file=None, name: str = None):
     """Saves an MP4 replay of an episode."""
     rollout_dir = f"./rollouts/{DATE}"
     os.makedirs(rollout_dir, exist_ok=True)
-    processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
-    mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
+    processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:64]
+    if name is not None:
+        mp4_path = f"{rollout_dir}/{name}--{TIME}--ep{idx}--succ{int(success)}--{processed_task_description}.mp4"
+    else:
+        mp4_path = f"{rollout_dir}/{TIME}--ep{idx}--succ{int(success)}--{processed_task_description}.mp4"
     video_writer = imageio.get_writer(mp4_path, fps=30)
     for img in rollout_images:
         video_writer.append_data(img)
@@ -71,6 +77,15 @@ def save_rollout_video(rollout_images, idx, success, task_description, log_file=
     print(f"Saved rollout MP4 at path {mp4_path}")
     if log_file is not None:
         log_file.write(f"Saved rollout MP4 at path {mp4_path}\n")
+    return mp4_path
+
+
+def save_rollout_video_given_path(rollout_images, mp4_path):
+    video_writer = imageio.get_writer(mp4_path, fps=30)
+    for img in rollout_images:
+        video_writer.append_data(img)
+    video_writer.close()
+    print(f"Saved rollout MP4 at path {mp4_path}")
     return mp4_path
 
 

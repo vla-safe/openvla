@@ -10,6 +10,7 @@ Note =>> for the time being, not adding the custom HF "docstring" formatting.
 References [LLaVa, IDEFICS-2]:
     => https://github.com/huggingface/transformers/blob/main/src/transformers/models/llava/modeling_llava.py
     => https://github.com/huggingface/transformers/blob/main/src/transformers/models/idefics2/modeling_idefics2.py
+
 """
 
 import logging
@@ -456,11 +457,11 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None,
         **kwargs: str,
     ) -> Dict[str, torch.Tensor]:
-        """Borrowed from `LlamaForCausalLM` and simplified for batch size = 1; mirrors original PrismaticVLM logic."""
-        if ((input_ids is not None) and (input_ids.shape[0] > 1)) or (
-            (inputs_embeds is not None) and (inputs_embeds.shape[0] > 1)
-        ):
-            raise ValueError("Generation with batch size > 1 is not currently supported!")
+        # """Borrowed from `LlamaForCausalLM` and simplified for batch size = 1; mirrors original PrismaticVLM logic."""
+        # if ((input_ids is not None) and (input_ids.shape[0] > 1)) or (
+        #     (inputs_embeds is not None) and (inputs_embeds.shape[0] > 1)
+        # ):
+        #     raise ValueError("Generation with batch size > 1 is not currently supported!")
 
         # Handle `past_key_values` (cache) =>> assume `input_ids` just has unprocessed tokens
         if past_key_values is not None:
@@ -510,16 +511,23 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
 
         # If the special empty token ('') does not already appear after the colon (':') token in the prompt
         # (after "OUT:" or "ASSISTANT:"), insert it to match the inputs seen at training time
+        # print(input_ids.shape)
         if not torch.all(input_ids[:, -1] == 29871):
             input_ids = torch.cat(
                 (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
             )
+            # Also extend the attention mask
+            kwargs['attention_mask'] = torch.cat(
+                (kwargs['attention_mask'], kwargs['attention_mask'].new_ones(1, 1)), dim=1
+            )
+        # print(input_ids.shape)
 
         # Run VLA inference
-        generated_ids = self.generate(input_ids, max_new_tokens=self.get_action_dim(unnorm_key), **kwargs)
+        generated_outputs = self.generate(input_ids, max_new_tokens=self.get_action_dim(unnorm_key), **kwargs)
+        generated_ids = generated_outputs['sequences']
 
         # Extract predicted action tokens and translate into (normalized) continuous actions
-        predicted_action_token_ids = generated_ids[0, -self.get_action_dim(unnorm_key) :].cpu().numpy()
+        predicted_action_token_ids = generated_ids[:, -self.get_action_dim(unnorm_key) :].cpu().numpy()
         discretized_actions = self.vocab_size - predicted_action_token_ids
         discretized_actions = np.clip(discretized_actions - 1, a_min=0, a_max=self.bin_centers.shape[0] - 1)
         normalized_actions = self.bin_centers[discretized_actions]
@@ -528,13 +536,20 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         action_norm_stats = self.get_action_stats(unnorm_key)
         mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["q01"], dtype=bool))
         action_high, action_low = np.array(action_norm_stats["q99"]), np.array(action_norm_stats["q01"])
+
+        mask = np.asarray(mask)[None].repeat(normalized_actions.shape[0], axis=0)
+
         actions = np.where(
             mask,
             0.5 * (normalized_actions + 1) * (action_high - action_low) + action_low,
             normalized_actions,
         )
+        
+        # If only one action was generated, return it as a 1D array
+        if actions.shape[0] == 1:
+            actions = actions[0]
 
-        return actions
+        return (actions, generated_outputs)
 
     @staticmethod
     def _check_unnorm_key(norm_stats: Dict[str, Dict[str, Any]], unnorm_key: Optional[str]) -> str:

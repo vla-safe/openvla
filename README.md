@@ -1,3 +1,84 @@
+# Adapted OpenVLA by SAFE for failure detection
+
+## Major Changes Compared to original OpenVLA code
+
+* Modified `experiments/robot/libero/run_libero_eval.py` to save the rollouts together with OpenVLA's internal features. 
+* Modified `prismatic/extern/hf/modeling_prismatic.py` to support sampling multiple actions. 
+
+## Setup Instructions
+
+```
+# Create and activate conda environment
+conda create -n safe-openvla python=3.10 -y
+conda activate safe-openvla
+
+# Install PyTorch. Below is a sample command to do this, but you should check the following link
+# to find installation instructions that are specific to your compute platform:
+# https://pytorch.org/get-started/locally/
+conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia -y  # UPDATE ME!
+
+# Clone and install the openvla repo
+git clone git@github.com:vla-safe/openvla.git # Clone this repo
+cd openvla
+pip install -e .
+
+pip install pandas scikit-learn
+
+# Install Flash Attention 2 for training (https://github.com/Dao-AILab/flash-attention)
+#   =>> If you run into difficulty, try `pip cache remove flash_attn` first
+pip install packaging ninja
+ninja --version; echo $?  # Verify Ninja --> should return exit code "0"
+pip install "flash-attn==2.5.5" --no-build-isolation
+
+# Set up the LIBERO package
+cd .. # Go back to the parent directory
+git clone git@github.com:Lifelong-Robot-Learning/LIBERO.git
+cd LIBERO
+pip install -e .
+
+cd ../openvla
+pip install -r experiments/robot/libero/libero_requirements.txt
+```
+
+
+## Generate rollouts on LIBERO task suite
+
+```
+# Generate rollouts with 1 sample per timestep on LIBERO-10
+# Use `--use_wandb True` if you want to log
+SUITE_NAME=10
+python experiments/robot/libero/run_libero_eval.py \
+    --model_family openvla \
+    --pretrained_checkpoint openvla/openvla-7b-finetuned-libero-${SUITE_NAME} \
+    --task_suite_name libero_${SUITE_NAME} \
+    --center_crop True \
+    --output_hidden_states True \
+    --run_id_note single-foward \
+    --use_wandb False \
+    --save_logs True
+
+
+# Generate rollouts with 10 samples per timestep on LIBERO-10
+# NOTE: This will take much longer time!
+SUITE_NAME=10
+python experiments/robot/libero/run_libero_eval.py \
+    --model_family openvla \
+    --pretrained_checkpoint openvla/openvla-7b-finetuned-libero-${SUITE_NAME} \
+    --task_suite_name libero_${SUITE_NAME} \
+    --center_crop True \
+    --output_hidden_states True \
+    --n_samples 10 \
+    --run_id_note multi-forward-10 \
+    --use_wandb False \
+    --save_logs True
+```
+
+
+<hr style="border: 5px solid black;"></hr>
+
+The original OpenVLA README is as follows:
+
+
 # OpenVLA: An Open-Source Vision-Language-Action Model
 
 [![arXiv](https://img.shields.io/badge/arXiv-2406.09246-df2a2a.svg?style=for-the-badge)](https://arxiv.org/abs/2406.09246)

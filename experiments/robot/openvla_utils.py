@@ -40,15 +40,26 @@ def get_vla(cfg):
     AutoProcessor.register(OpenVLAConfig, PrismaticProcessor)
     AutoModelForVision2Seq.register(OpenVLAConfig, OpenVLAForActionPrediction)
 
-    vla = AutoModelForVision2Seq.from_pretrained(
+    # Use the customized class instead of loading from HuggingFace.
+    vla = OpenVLAForActionPrediction.from_pretrained(
         cfg.pretrained_checkpoint,
-        attn_implementation="flash_attention_2",
+        attn_implementation=cfg.attn_implementation,
         torch_dtype=torch.bfloat16,
         load_in_8bit=cfg.load_in_8bit,
         load_in_4bit=cfg.load_in_4bit,
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )
+
+    # vla = AutoModelForVision2Seq.from_pretrained(
+    #     cfg.pretrained_checkpoint,
+    #     attn_implementation="flash_attention_2",
+    #     torch_dtype=torch.bfloat16,
+    #     load_in_8bit=cfg.load_in_8bit,
+    #     load_in_4bit=cfg.load_in_4bit,
+    #     low_cpu_mem_usage=True,
+    #     trust_remote_code=True,
+    # )
 
     # Move model to device.
     # Note: `.to()` is not supported for 8-bit or 4-bit bitsandbytes models, but the model will
@@ -124,9 +135,19 @@ def crop_and_resize(image, crop_scale, batch_size):
     return image
 
 
-def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False):
-    """Generates an action with the VLA policy."""
-    image = Image.fromarray(obs["full_image"])
+def get_vla_prompt(task_label, base_vla_name):
+    # Build VLA prompt
+    if "openvla-v01" in base_vla_name:  # OpenVLA v0.1
+        prompt = (
+            f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
+        )
+    else:  # OpenVLA
+        prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
+    return prompt
+
+
+def preprocess_image(original_image: np.ndarray, center_crop: bool) -> Image.Image:
+    image = Image.fromarray(original_image)
     image = image.convert("RGB")
 
     # (If trained with image augmentations) Center crop image and then resize back up to original size.
@@ -153,18 +174,52 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
         # Convert back to PIL Image
         image = Image.fromarray(image.numpy())
         image = image.convert("RGB")
+    
+    return image
 
-    # Build VLA prompt
-    if "openvla-v01" in base_vla_name:  # OpenVLA v0.1
-        prompt = (
-            f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
+
+def get_text_tokens(processor, task_label, base_vla_name):
+    image = np.zeros((224, 224, 3), dtype=np.uint8)
+    image = Image.fromarray(image)
+    prompt = get_vla_prompt(task_label, base_vla_name)
+    inputs = processor(prompt, image)
+    input_ids = inputs["input_ids"]
+
+    # If the special empty token ('') does not already appear after the colon (':') token in the prompt
+    # (after "OUT:" or "ASSISTANT:"), insert it to match the inputs seen at training time
+    if not torch.all(input_ids[:, -1] == 29871):
+        input_ids = torch.cat(
+            (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
         )
-    else:  # OpenVLA
-        prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
+        
+    input_text_tokens = processor.tokenizer.convert_ids_to_tokens(input_ids.squeeze().cpu().numpy())
+    return input_text_tokens
+    
+
+def get_vla_action(
+    vla, processor, base_vla_name, obs, task_label, unnorm_key, 
+    center_crop=False, n_samples: int = 1, output_attentions: bool = False,
+    output_hidden_states: bool = False, output_logits: bool = False
+):
+    """Generates an action with the VLA policy."""
+    image = preprocess_image(obs["full_image"], center_crop)
+    prompt = get_vla_prompt(task_label, base_vla_name)
 
     # Process inputs.
     inputs = processor(prompt, image).to(DEVICE, dtype=torch.bfloat16)
+    
+    if n_samples == 1:
+        # Get a single action.
+        kwargs = {"do_sample": False}
+    else:
+        # Sample multiple actions. 
+        kwargs = {"do_sample": True, "use_cache": False, "num_return_sequences": n_samples}
 
-    # Get action.
-    action = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
+    kwargs['return_dict_in_generate'] = True
+    kwargs['output_logits'] = output_logits
+    kwargs['output_attentions']  = output_attentions
+    kwargs['output_hidden_states'] = output_hidden_states
+        
+    action = vla.predict_action(**inputs, unnorm_key=unnorm_key, **kwargs)
+
     return action
